@@ -1,227 +1,172 @@
+# Scaling Laws of Neural Language Models
 
-# nanoGPT
+![kaplan_scaling](assets/kaplan_scaling.png)
 
-![nanoGPT](assets/nanogpt.jpg)
+This repository contains an implementation of scaling laws as first found by Kaplan et al in [Scaling Laws of Neural Language Models](https://arxiv.org/abs/2001.08361). We find how the training loss of a language model scales with parameter count, dataset size, total compute, and the number of training steps. We also find the optimal number of parameters for a given compute budget, and the critical batch size at which a language model must be trained for the optimal trade-off between time efficiency and compute efficiency (as suggested in [An Empirical Model of Large-Batch Training](https://arxiv.org/abs/1812.06162) by McCandlish, Kaplan, et al).
 
-The simplest, fastest repository for training/finetuning medium-sized GPTs. It is a rewrite of [minGPT](https://github.com/karpathy/minGPT) that prioritizes teeth over education. Still under active development, but currently the file `train.py` reproduces GPT-2 (124M) on OpenWebText, running on a single 8XA100 40GB node in about 4 days of training. The code itself is plain and readable: `train.py` is a ~300-line boilerplate training loop and `model.py` a ~300-line GPT model definition, which can optionally load the GPT-2 weights from OpenAI. That's it.
+Our results qualitatively match their results in all cases. We also obtain quantitative matches in some cases despite significant differences in our experimental settings (for example, we train much smaller models, and our dataset OpenWebText is different from the WebText dataset used internally at OpenAI). Perhaps, the most interesting result is that we find a similar scaling law for the dependence of optimal model size $N_{\text{opt}}$ on a compute budget $C$ as they do:
 
-![repro124m](assets/gpt2_124M_loss.png)
+$$N_{\text{opt}} \propto C^{0.72}$$
 
-Because the code is so simple, it is very easy to hack to your needs, train new models from scratch, or finetune pretrained checkpoints (e.g. biggest one currently available as a starting point would be the GPT-2 1.3B model from OpenAI).
+[Kaplan et al](https://arxiv.org/abs/2001.08361) obtained $N_{\text{opt}} \propto C^{0.73}$. 
+
+We carried out all of our experiments with [nanoGPT](https://github.com/karpathy/nanoGPT). The repository is accompanied by a [Weights and Biases Project](https://wandb.ai/shehper/owt-scaling) containing the training curves of all experiments. The analysis of our results is presented in the Jupyter notebook [kaplan_scaling_laws.ipynb](kaplan_scaling_laws.ipynb). 
+
+> **Note:** We carried out experiments at a scale much smaller than that of [Kaplan et al](https://arxiv.org/abs/2001.08361) due to computational constraints. They varied model size over six orders of magnitude with the largest model having 1.5B parameters, while we could vary model size over only three orders of magnitude (with the largest model having 6.3M parameters). It's nice that already at this small scale, we can see all of the trends they discovered as we review below. If you would like to see the results of this repository extended to larger models and have compute available, please get in touch!
+
+> :warning: Since their work, [Hoffman et al](https://arxiv.org/abs/2203.15556) have discovered that with a different choice of training configurations, the optimal model size grows much more slowly as a function of compute, i.e. $N_{\text{opt}} \propto C^{0.5}$. We are currently working on reproducing their results.
+
+# main results
+
+## scaling laws with parameter count, dataset size, and compute
+
+[Kaplan et al](https://arxiv.org/abs/2001.08361) discovered that the test loss of a language model scales as a power law with the number of (non-embedding) model parameters $N$, the number of tokens $D$ in the training dataset, and the amount of compute $C$ used to train a model: 
+
+$$L(X) = \left( \frac{X_c}{X} \right)^{\alpha_X}$$
+
+where $X = N, D,$ or $C$. When scaling with $N$ or $D$, the non-scaling variable is fixed at a large value so that it is not a bottleneck in affecting the model performance. If both $N$ and $D$ are allowed to vary, the scaling laws $L(N)$ and $L(D)$ can be combined into a single equation:
+
+$$L(N, D) = \left[ \left(\frac{N_c}{N}\right)^{ \frac{\alpha_N}{\alpha_D} } + \frac{D_c}{D}  \right]^{\alpha_D}$$
+
+We trained several models with varying model and dataset sizes, using (almost) the same set of hyperparameters as theirs, and found good fits to these equations. (See the figure below.)
+
+![our_scaling](assets/merged_image.png)
+
+While the trends match up qualitatively, there are differences in some scaling exponents and coefficients. (See the table below.) In retrospect, this was expected as our training dataset is different from theirs, and hence it is not meaningful to compare test losses. However, we note that some results are strikingly close. For example, our $\alpha_N$ is the same as theirs in the fit of $L(N, D)$, and is close to theirs in the fit of $L(N)$ (0.082 vs 0.076). This is perhaps evidence for a statement that $\alpha_N$ is independent of the choice of a dataset as long as it is large enough (though it might depend on other choices such as that of a tokenizer or hyperparameter configurations).
+
+<div align="center">
+
+| Equation                  | Kaplan et al's fit | Our fit | 
+| :---------------- | :------: | ----: |
+| $L(N) = (N_c/N)^{\alpha_N}$  | $$\alpha_N = 0.076$$ $$N_c = 8.8 \times 10^{13} $$  | $$\alpha_N = 0.082 $$ $$N_c = 3.8 \times 10^{13} $$  |  
+| $L(N, D) = \left[ \left(\frac{N_c}{N}\right)^{\frac{\alpha_N}{\alpha_D}} + \frac{D_c}{D}  \right]^{\alpha_D}$         |   $$\alpha_N = 0.076$$  $$\alpha_D = 0.103$$ $$N_c = 6.4 \times 10^{13}  $$ $$D_c = 1.8 \times 10^{13}  $$   | $$\alpha_N = 0.076$$ $$\alpha_D = 0.122$$ $$N_c = 1.32 \times 10^{14}  $$ $$D_c = 1.22 \times 10^{12}  $$  |   
+| $L(C) = (C_c/C)^{\alpha_C}$  |   $$\alpha_C = 0.057$$ $$C_c = 1.6 \times 10^{7} $$   |  $$\alpha_C = 0.074$$ $$C_c = 1.8 \times 10^{5}$$ |
+
+</div>
+
+
+[Kaplan et al](https://arxiv.org/abs/2001.08361) used their results to obtain optimal model size as a function of compute, i.e. the number of parameters that, for a fixed amount of compute, achieve the lowest value of test loss. They found that it obeys a power law:
+
+$$N^{\text{Kaplan}}_{\text{opt}}(C) = 1.6 \times 10^9 \ C^{0.88}$$
+
+We found a close match with their result,  
+
+$$N^{\text{nanoGPT}}_{\text{opt}}(C) = 2.8 \times 10^9 \ C^{0.90}$$
+
+indicating that while the test loss depends on the choice of a dataset, the trend in the optimal number of parameters as a function of compute is largely independent of it. 
+
+> **Remark**: Note that we did not find a fit to $L(D)$ as this requires training a very large model. [Kaplan et al](https://arxiv.org/abs/2001.08361) found $\alpha_D$ and $D_c$ in the fit to $L(D)$ to be quite close to the ones in the fit to $L(N, D)$. We suspect that the same should be true for us.
+
+
+## critical batch size
+
+<p align="middle">
+  <img src="./assets/critical_batch.png" width="440" />
+</p>
+
+The optimal number of parameters, $N_{\text{opt}}(C)$, is only optimal if we were to train all models at the same fixed batch size (and other hyperparameter configurations) used to conduct our scaling laws experiments. 
+
+But what if this batch size is too large? Generally speaking, increasing batch size reduces noise in gradient descent but this benefit dies off once the batch size crosses some threshold value. Training at a batch size larger than this threshold is wasteful of compute, as it does not help obtain significantly better performance. Training at smaller batch sizes, on the other hand, could save us some compute (at the cost of increasing the number of training steps). 
+
+
+The trade-off between time-efficiency and compute-efficiency happens around a task-dependent *critical batch size* $\mathcal{B}_{\text{crit}}$ as observed by [McCandlish et al](https://arxiv.org/abs/1812.06162). This batch size is independent of the model size but it depends on the target loss value. [Kaplan et al](https://arxiv.org/abs/2001.08361) found the following scaling law for critical batch size as a function of training loss in a language modeling task:
+
+$$
+\mathcal{B}^{\text{Kaplan}}_{\text{crit}}(L) = 2.0 \times 10^8 \ L^{-4.76}
+$$
+
+We conducted several experiments to obtain critical batch size for language modeling with nanoGPT and obtained:
+
+$$
+\mathcal{B}^{\text{nanoGPT}}_{\text{crit}}(L) = 2.2 \times 10^7 \ L^{-4.26}
+$$
+ 
+
+## optimal allocation of compute budget
+
+<p align="middle">
+  <img src="./assets/Kaplan_LCmin.png" width="400" /> 
+  <img src="./assets/Kaplan_NCmin.png" width="400" /> 
+</p>
+
+[Kaplan et al](https://arxiv.org/abs/2001.08361) used their estimate of critical batch size to adjust the scaling laws with compute. That is, if they were to train at a batch size much smaller than the critical batch size for maximal compute-efficiency, their scaling laws $L(C)$ and $N_{\text{opt}}(C)$ would be different. We performed the same exercise. A comparison of our results is given below. 
+
+<div align="center">
+
+| Equation                  | Kaplan et al's fit | Our fit | 
+| :---------------- | :------: | ----: |
+| $L(C_{\min}) = (C^{\min}_c/C)^{\alpha^{\min}_C}$  |   $$\alpha^{\min}_C = 0.050$$  $$C^{\min}_c = 3.1 \times 10^{8}$$   |  $$\alpha^{\min}_C = 0.056$$ $$C^{\min}_c = 4.2 \times 10^{6}$$ |
+| $N_{\text{opt}}(C_{\text{min}}) = N_e C^{p_N}_{\min} $  | $$p_N= 0.73$$ $$N_e = 1.3 \times 10^{9}$$  | $$p_N= 0.72$$ $$N_e = 4.2 \times 10^{9}$$  |  
+
+</div>
+
+Significantly, while many of the scaling exponents and coefficients differ, perhaps the most important of them all --- $p_N$, the scaling exponent of optimal model size with compute budget, is almost the same (0.73 vs 0.72). 
+
+This scaling law for $N_{\text{opt}}(C_{\text{min}})$ says that for a 10x increase in compute budget, the model size must increase $10^{0.72} \sim 5.24$ times. How should we distribute the rest of the increase in compute budget over increases in batch size and the number of training steps? [Kaplan et al](https://arxiv.org/abs/2001.08361) find that the batch size and the minimum of training steps $S_{\text{min}}$ to obtain a specific loss value must increase with compute as
+
+$$B^{\text{Kaplan}} \propto C_{\min}^{0.24}; \quad  S_{\text{min}}^{\text{Kaplan}} \propto C_{\min}^{0.03}$$
+
+We find:
+
+$$B^{\text{nanoGPT}} \propto C_{\min}^{0.24}; \quad  S_{\text{min}}^{\text{nanoGPT}} \propto C_{\min}^{0.04}$$
+
+See the Jupyter Notebook [kaplan_scaling_laws.ipynb](kaplan_scaling_laws.ipynb) for more details.
 
 ## install
 
-```
-pip install torch numpy transformers datasets tiktoken wandb tqdm
-```
-
-Dependencies:
-
-- [pytorch](https://pytorch.org) <3
-- [numpy](https://numpy.org/install/) <3
--  `transformers` for huggingface transformers <3 (to load GPT-2 checkpoints)
--  `datasets` for huggingface datasets <3 (if you want to download + preprocess OpenWebText)
--  `tiktoken` for OpenAI's fast BPE code <3
--  `wandb` for optional logging <3
--  `tqdm` for progress bars <3
-
-## quick start
-
-If you are not a deep learning professional and you just want to feel the magic and get your feet wet, the fastest way to get started is to train a character-level GPT on the works of Shakespeare. First, we download it as a single (1MB) file and turn it from raw text into one large stream of integers:
+This repository is built on top of [nanoGPT](https://github.com/karpathy/nanoGPT). In addition to their dependencies, we used matplotlib, scikit-learn, and scipy for analysis of results. You may install all dependencies with
 
 ```
-$ python data/shakespeare_char/prepare.py
+pip install torch numpy transformers datasets tiktoken wandb tqdm matplotlib scikit-learn scipy
 ```
 
-This creates a `train.bin` and `val.bin` in that data directory. Now it is time to train your GPT. The size of it very much depends on the computational resources of your system:
+## reproduction
 
-**I have a GPU**. Great, we can quickly train a baby GPT with the settings provided in the [config/train_shakespeare_char.py](config/train_shakespeare_char.py) config file:
-
-```
-$ python train.py config/train_shakespeare_char.py
-```
-
-If you peek inside it, you'll see that we're training a GPT with a context size of up to 256 characters, 384 feature channels, and it is a 6-layer Transformer with 6 heads in each layer. On one A100 GPU this training run takes about 3 minutes and the best validation loss is 1.4697. Based on the configuration, the model checkpoints are being written into the `--out_dir` directory `out-shakespeare-char`. So once the training finishes we can sample from the best model by pointing the sampling script at this directory:
+To reproduce scaling laws, we must first tokenize the [OpenWebText](https://openwebtext2.readthedocs.io/en/latest/) dataset as in nanoGPT.
 
 ```
-$ python sample.py --out_dir=out-shakespeare-char
+python data/openwebtext/prepare.py
 ```
 
-This generates a few samples, for example:
+This downloads and tokenizes the dataset, and stores the output in `train.bin` and `val.bin` files, which hold the [OpenAI Byte-Pair Encoding](https://huggingface.co/learn/nlp-course/chapter6/5?fw=pt) token ids in one sequence, stored as raw uint16 bytes.
+
+Next, we included two new configuration files in the 'config' folder, which mimic the training configurations of [Kaplan et al](https://arxiv.org/abs/2001.08361). [scale_gpt.py](config/scale_gpt.py) may be used to run experiments with varying model sizes and subsets of datasets. For example, to change the model size, run
 
 ```
-ANGELO:
-And cowards it be strawn to my bed,
-And thrust the gates of my threats,
-Because he that ale away, and hang'd
-An one with him.
-
-DUKE VINCENTIO:
-I thank your eyes against it.
-
-DUKE VINCENTIO:
-Then will answer him to save the malm:
-And what have you tyrannous shall do this?
-
-DUKE VINCENTIO:
-If you have done evils of all disposition
-To end his power, the day of thrust for a common men
-That I leave, to fight with over-liking
-Hasting in a roseman.
+python train.py config/scale_gpt.py --scale_N=True --n_layer=8 --n_embd=64    
 ```
 
-lol  `¯\_(ツ)_/¯`. Not bad for a character-level model after 3 minutes of training on a GPU. Better results are quite likely obtainable by instead finetuning a pretrained GPT-2 model on this dataset (see finetuning section later).
-
-**I only have a macbook** (or other cheap computer). No worries, we can still train a GPT but we want to dial things down a notch. I recommend getting the bleeding edge PyTorch nightly ([select it here](https://pytorch.org/get-started/locally/) when installing) as it is currently quite likely to make your code more efficient. But even without it, a simple train run could look as follows:
+and to change the model size as well as the fraction of the dataset, run
 
 ```
-$ python train.py config/train_shakespeare_char.py --device=cpu --compile=False --eval_iters=20 --log_interval=1 --block_size=64 --batch_size=12 --n_layer=4 --n_head=4 --n_embd=128 --max_iters=2000 --lr_decay_iters=2000 --dropout=0.0
+python train.py config/scale_gpt.py --scale_D=True  --n_layer=4 --n_embd=64 --fraction_of_data=0.01 
 ```
 
-Here, since we are running on CPU instead of GPU we must set both `--device=cpu` and also turn off PyTorch 2.0 compile with `--compile=False`. Then when we evaluate we get a bit more noisy but faster estimate (`--eval_iters=20`, down from 200), our context size is only 64 characters instead of 256, and the batch size only 12 examples per iteration, not 64. We'll also use a much smaller Transformer (4 layers, 4 heads, 128 embedding size), and decrease the number of iterations to 2000 (and correspondingly usually decay the learning rate to around max_iters with `--lr_decay_iters`). Because our network is so small we also ease down on regularization (`--dropout=0.0`). This still runs in about ~3 minutes, but gets us a loss of only 1.88 and therefore also worse samples, but it's still good fun:
+The former run may be used to model $L(N)$, and the latter may be used to model $L(N, D)$.
+
+To measure critical batch size, use the other configuration file [estimate_critical_batch.py](config/estimate_critical_batch.py) to run experiments with various batch sizes and learning rates. 
 
 ```
-$ python sample.py --out_dir=out-shakespeare-char --device=cpu
-```
-Generates samples like this:
-
-```
-GLEORKEN VINGHARD III:
-Whell's the couse, the came light gacks,
-And the for mought you in Aut fries the not high shee
-bot thou the sought bechive in that to doth groan you,
-No relving thee post mose the wear
+python train.py config/estimate_critical_batch.py --batch_size=8 --gradient_accumulation_steps=1 --learning_rate=1e-2  
 ```
 
-Not bad for ~3 minutes on a CPU, for a hint of the right character gestalt. If you're willing to wait longer, feel free to tune the hyperparameters, increase the size of the network, the context length (`--block_size`), the length of training, etc.
+Loss curves for all experiments are available on the associated [Weights and Biases project page](https://wandb.ai/shehper/owt-scaling). Use filters 'scale_N=True', 'scale_D=True', and 'estimate_B_crit=True' to select the experiments used to model $L(N)$, $L(N, D)$, and $\mathcal{B}_{\text{crit}}(L)$ respectively. Results are analyzed and fit to these trends in [kaplan_scaling_laws.ipynb](kaplan_scaling_laws.ipynb).
 
-Finally, on Apple Silicon Macbooks and with a recent PyTorch version make sure to add `--device=mps` (short for "Metal Performance Shaders"); PyTorch then uses the on-chip GPU that can *significantly* accelerate training (2-3X) and allow you to use larger networks. See [Issue 28](https://github.com/karpathy/nanoGPT/issues/28) for more.
-
-## reproducing GPT-2
-
-A more serious deep learning professional may be more interested in reproducing GPT-2 results. So here we go - we first tokenize the dataset, in this case the [OpenWebText](https://openwebtext2.readthedocs.io/en/latest/), an open reproduction of OpenAI's (private) WebText:
-
-```
-$ python data/openwebtext/prepare.py
-```
-
-This downloads and tokenizes the [OpenWebText](https://huggingface.co/datasets/openwebtext) dataset. It will create a `train.bin` and `val.bin` which holds the GPT2 BPE token ids in one sequence, stored as raw uint16 bytes. Then we're ready to kick off training. To reproduce GPT-2 (124M) you'll want at least an 8X A100 40GB node and run:
-
-```
-$ torchrun --standalone --nproc_per_node=8 train.py config/train_gpt2.py
-```
-
-This will run for about 4 days using PyTorch Distributed Data Parallel (DDP) and go down to loss of ~2.85. Now, a GPT-2 model just evaluated on OWT gets a val loss of about 3.11, but if you finetune it it will come down to ~2.85 territory (due to an apparent domain gap), making the two models ~match.
-
-If you're in a cluster environment and you are blessed with multiple GPU nodes you can make GPU go brrrr e.g. across 2 nodes like:
-
-```
-Run on the first (master) node with example IP 123.456.123.456:
-$ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=0 --master_addr=123.456.123.456 --master_port=1234 train.py
-Run on the worker node:
-$ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123.456 --master_port=1234 train.py
-```
-
-It is a good idea to benchmark your interconnect (e.g. iperf3). In particular, if you don't have Infiniband then also prepend `NCCL_IB_DISABLE=1` to the above launches. Your multinode training will work, but most likely _crawl_. By default checkpoints are periodically written to the `--out_dir`. We can sample from the model by simply `$ python sample.py`.
-
-Finally, to train on a single GPU simply run the `$ python train.py` script. Have a look at all of its args, the script tries to be very readable, hackable and transparent. You'll most likely want to tune a number of those variables depending on your needs.
-
-## baselines
-
-OpenAI GPT-2 checkpoints allow us to get some baselines in place for openwebtext. We can get the numbers as follows:
-
-```
-$ python train.py eval_gpt2
-$ python train.py eval_gpt2_medium
-$ python train.py eval_gpt2_large
-$ python train.py eval_gpt2_xl
-```
-
-and observe the following losses on train and val:
-
-| model | params | train loss | val loss |
-| ------| ------ | ---------- | -------- |
-| gpt2 | 124M         | 3.11  | 3.12     |
-| gpt2-medium | 350M  | 2.85  | 2.84     |
-| gpt2-large | 774M   | 2.66  | 2.67     |
-| gpt2-xl | 1558M     | 2.56  | 2.54     |
-
-However, we have to note that GPT-2 was trained on (closed, never released) WebText, while OpenWebText is just a best-effort open reproduction of this dataset. This means there is a dataset domain gap. Indeed, taking the GPT-2 (124M) checkpoint and finetuning on OWT directly for a while reaches loss down to ~2.85. This then becomes the more appropriate baseline w.r.t. reproduction.
-
-## finetuning
-
-Finetuning is no different than training, we just make sure to initialize from a pretrained model and train with a smaller learning rate. For an example of how to finetune a GPT on new text go to `data/shakespeare` and run `prepare.py` to download the tiny shakespeare dataset and render it into a `train.bin` and `val.bin`, using the OpenAI BPE tokenizer from GPT-2. Unlike OpenWebText this will run in seconds. Finetuning can take very little time, e.g. on a single GPU just a few minutes. Run an example finetuning like:
-
-```
-$ python train.py config/finetune_shakespeare.py
-```
-
-This will load the config parameter overrides in `config/finetune_shakespeare.py` (I didn't tune them much though). Basically, we initialize from a GPT2 checkpoint with `init_from` and train as normal, except shorter and with a small learning rate. If you're running out of memory try decreasing the model size (they are `{'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}`) or possibly decreasing the `block_size` (context length). The best checkpoint (lowest validation loss) will be in the `out_dir` directory, e.g. in `out-shakespeare` by default, per the config file. You can then run the code in `sample.py --out_dir=out-shakespeare`:
-
-```
-THEODORE:
-Thou shalt sell me to the highest bidder: if I die,
-I sell thee to the first; if I go mad,
-I sell thee to the second; if I
-lie, I sell thee to the third; if I slay,
-I sell thee to the fourth: so buy or sell,
-I tell thee again, thou shalt not sell my
-possession.
-
-JULIET:
-And if thou steal, thou shalt not sell thyself.
-
-THEODORE:
-I do not steal; I sell the stolen goods.
-
-THEODORE:
-Thou know'st not what thou sell'st; thou, a woman,
-Thou art ever a victim, a thing of no worth:
-Thou hast no right, no right, but to be sold.
-```
-
-Whoa there, GPT, entering some dark place over there. I didn't really tune the hyperparameters in the config too much, feel free to try!
-
-## sampling / inference
-
-Use the script `sample.py` to sample either from pre-trained GPT-2 models released by OpenAI, or from a model you trained yourself. For example, here is a way to sample from the largest available `gpt2-xl` model:
-
-```
-$ python sample.py \
-    --init_from=gpt2-xl \
-    --start="What is the answer to life, the universe, and everything?" \
-    --num_samples=5 --max_new_tokens=100
-```
-
-If you'd like to sample from a model you trained, use the `--out_dir` to point the code appropriately. You can also prompt the model with some text from a file, e.g. `$ python sample.py --start=FILE:prompt.txt`.
-
-## efficiency notes
-
-For simple model benchmarking and profiling, `bench.py` might be useful. It's identical to what happens in the meat of the training loop of `train.py`, but omits much of the other complexities.
-
-Note that the code by default uses [PyTorch 2.0](https://pytorch.org/get-started/pytorch-2.0/). At the time of writing (Dec 29, 2022) this makes `torch.compile()` available in the nightly release. The improvement from the one line of code is noticeable, e.g. cutting down iteration time from ~250ms / iter to 135ms / iter. Nice work PyTorch team!
+All models for scaling experiments were trained either on one A100 GPU for 3-4 days, or on two A100 GPUs for ~2 days using PyTorch DataDistributedParallel. For estimating critical batch size, we trained models with varying batch sizes. When the batch size was sufficiently small, we could train the model on an RTX 2080 Ti or an RTX 3090s in a few hours. For larger batch sizes, we had to use one A100 GPU for roughly 1 day. 
 
 ## todos
 
-- Investigate and add FSDP instead of DDP
-- Eval zero-shot perplexities on standard evals (e.g. LAMBADA? HELM? etc.)
-- Finetune the finetuning script, I think the hyperparams are not great
-- Schedule for linear batch size increase during training
-- Incorporate other embeddings (rotary, alibi)
-- Separate out the optim buffers from model params in checkpoints I think
-- Additional logging around network health (e.g. gradient clip events, magnitudes)
-- Few more investigations around better init etc.
+As in [nanoGPT](https://github.com/karpathy/nanoGPT), we present some directions for future work and improvements. 
 
-## troubleshooting
+- Reproduce Chinchilla Scaling Laws with nanoGPT (work in progress)
+- Train larger models, extending scaling laws to higher orders of magnitude
+- Our fits for $S_{\min}$ and $E_{\min}$ do not look great. Improve on these fits.
+- Use (Chinchilla) scaling laws and critical batch size to train a large model (1B+ parameters) in a compute-optimal way.
+- Experiment with different parameterizations. Does [maximal-update](https://arxiv.org/abs/2203.03466) or [neural-tangent](https://arxiv.org/abs/2304.02034) parameterization have a significant impact on scaling trends?
+- Perform ablation studies. Determine how various scaling coefficients and exponents depend on various choices made in our experiments, such as dataset, tokenizer, learning rate schedules, etc.
 
-Note that by default this repo uses PyTorch 2.0 (i.e. `torch.compile`). This is fairly new and experimental, and not yet available on all platforms (e.g. Windows). If you're running into related error messages try to disable this by adding `--compile=False` flag. This will slow down the code but at least it will run.
+## acknowledgments
 
-For some context on this repository, GPT, and language modeling it might be helpful to watch my [Zero To Hero series](https://karpathy.ai/zero-to-hero.html). Specifically, the [GPT video](https://www.youtube.com/watch?v=kCc8FmEb1nY) is popular if you have some prior language modeling context.
+I would like to thank [Andrej Karpathy](https://karpathy.ai/) for the beautiful set of lectures in [Neural Networks: Zero to Hero](https://www.youtube.com/playlist?list=PLAqhIrjkxbuWI23v9cThsA9GvCAUhRvKZ) series, especially the lecture on [building GPT from scratch](https://www.youtube.com/watch?v=kCc8FmEb1nY&list=PLAqhIrjkxbuWI23v9cThsA9GvCAUhRvKZ&index=8&t=868s) and the [nanoGPT](https://github.com/karpathy/nanoGPT) repository. Using these resources, I went from zero to non-zero in a matter of a few months and the journey forward continues.
 
-For more questions/discussions feel free to stop by **#nanoGPT** on Discord:
-
-[![](https://dcbadge.vercel.app/api/server/3zy8kqD9Cp?compact=true&style=flat)](https://discord.gg/3zy8kqD9Cp)
-
-## acknowledgements
-
-All nanoGPT experiments are powered by GPUs on [Lambda labs](https://lambdalabs.com), my favorite Cloud GPU provider. Thank you Lambda labs for sponsoring nanoGPT!
+I would also like to thank the administrators of the Amarel Cluster at Rutgers University for providing free access to the cluster to all members of the Rutgers community, and for providing prompt help whenever required. Without free access to these resources, the experiments for this repository would not have been possible. 
