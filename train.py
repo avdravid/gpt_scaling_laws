@@ -21,6 +21,8 @@ import time
 import math
 import pickle
 from contextlib import nullcontext
+from datetime import datetime, timedelta
+from collections import deque
 
 import numpy as np
 import torch
@@ -80,13 +82,51 @@ estimate_B_crit = False
 N = 12 * n_layer * n_embd**2 # number of non-embedding parameters
 fraction_of_data = 1.0 # fraction of OWT dataset that will be used for training
 D = int(fraction_of_data*9035582198) # number of OWT dataset tokens
-wandb_run_id = "" # needed only if resuming a W&B run. 
+wandb_run_id = "" # needed only if resuming a W&B run.
+# ETA settings
+eta_window_size = 50 # number of recent iterations to use for ETA calculation
 
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
+
+def format_eta(seconds):
+    """Format ETA in a human-readable format"""
+    if seconds < 0:
+        return "N/A"
+    
+    # Convert to timedelta for easy formatting
+    td = timedelta(seconds=int(seconds))
+    days = td.days
+    hours, remainder = divmod(td.seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    if days > 0:
+        return f"{days}d {hours}h {minutes}m"
+    elif hours > 0:
+        return f"{hours}h {minutes}m"
+    elif minutes > 0:
+        return f"{minutes}m {seconds}s"
+    else:
+        return f"{seconds}s"
+
+def calculate_eta(iter_times, current_iter, max_iters):
+    """Calculate ETA based on recent iteration times"""
+    if len(iter_times) < 5:  # Need at least 5 samples for reliable estimate
+        return None
+    
+    # Calculate average time per iteration from recent samples
+    avg_time_per_iter = sum(iter_times) / len(iter_times)
+    
+    # Calculate remaining iterations
+    remaining_iters = max_iters - current_iter
+    
+    # Calculate ETA in seconds
+    eta_seconds = remaining_iters * avg_time_per_iter
+    
+    return eta_seconds
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -259,6 +299,10 @@ if wandb_log and master_process:
     else:
         wandb.init(project=wandb_project, name=wandb_run_name, config=config)
 
+# Initialize ETA tracking
+iter_times = deque(maxlen=eta_window_size)  # Store recent iteration times
+training_start_time = time.time()
+
 # training loop
 X, Y = get_batch('train') # fetch the very first batch
 t0 = time.time()
@@ -276,15 +320,25 @@ while True:
     # except when estimating critical batch size or reproducing Chinchilla scaling laws as they work with (smoothed) training loss
     if iter_num % eval_interval == 0 and master_process and not (estimate_B_crit or scale_D == 'Chinchilla'):
         losses = estimate_loss()
-        print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        
+        # Calculate ETA for evaluation logging
+        eta_seconds = calculate_eta(iter_times, iter_num, max_iters)
+        eta_str = format_eta(eta_seconds) if eta_seconds is not None else "calculating..."
+        
+        print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, ETA: {eta_str}")
+        
         if wandb_log:
-            wandb.log({
+            log_dict = {
                 "iter": iter_num,
                 "train/loss": losses['train'],
                 "val/loss": losses['val'],
                 "lr": lr,
                 "mfu": running_mfu*100, # convert to percentage
-            })
+            }
+            if eta_seconds is not None:
+                log_dict["eta_hours"] = eta_seconds / 3600
+            wandb.log(log_dict)
+            
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
             if iter_num > 0:
@@ -297,7 +351,7 @@ while True:
                     'config': config,
                 }
                 print(f"saving checkpoint to {out_dir}")
-                torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
+                torch.save(checkpoint, os.path.join(out_dir, 'ckpt_'+str(iter_num)+".pt"))
     if iter_num == 0 and eval_only:
         break
 
@@ -331,6 +385,10 @@ while True:
     t1 = time.time()
     dt = t1 - t0
     t0 = t1
+    
+    # Update ETA tracking
+    iter_times.append(dt)
+    
     if iter_num % log_interval == 0 and master_process:
         # get loss as float. note: this is a CPU-GPU sync point
         # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
@@ -338,14 +396,26 @@ while True:
         if local_iter_num >= 5: # let the training loop settle a bit
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
-        print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+        
+        # Calculate and display ETA
+        eta_seconds = calculate_eta(iter_times, iter_num, max_iters)
+        eta_str = format_eta(eta_seconds) if eta_seconds is not None else "calculating..."
+        
+        # Calculate progress percentage
+        progress_pct = (iter_num / max_iters) * 100
+        
+        print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%, progress {progress_pct:.1f}%, ETA: {eta_str}")
 
         if (estimate_B_crit or scale_D == 'Chinchilla') and wandb_log:
-            wandb.log({
+            log_dict = {
                 "iter": iter_num,
                 "iter_loss": lossf,
                 "lr": lr,
-            })
+            }
+            if eta_seconds is not None:
+                log_dict["eta_hours"] = eta_seconds / 3600
+            wandb.log(log_dict)
+            
     iter_num += 1
     local_iter_num += 1
 
@@ -355,3 +425,12 @@ while True:
 
 if ddp:
     destroy_process_group()
+
+# Print final training summary
+if master_process:
+    total_training_time = time.time() - training_start_time
+    print(f"\nTraining completed!")
+    print(f"Total training time: {format_eta(total_training_time)}")
+    print(f"Total iterations: {iter_num}")
+    if iter_num > 0:
+        print(f"Average time per iteration: {total_training_time/iter_num:.2f}s")
