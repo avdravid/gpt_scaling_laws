@@ -68,7 +68,7 @@ if scaling == 'Kaplan':
     else: # when estimating critical batch size, learning rate is set by hand so we do not need to compute it
         wandb_run_name = f"N-{N:.2e}-batch-{globals()['batch_size']*globals()['gradient_accumulation_steps']}-lr-{globals()['learning_rate']}"
     
-    out_dir = 'out-'+wandb_run_name
+    #out_dir = 'out-'+wandb_run_name
 
 elif scaling == 'Chinchilla-1' or scaling == 'Chinchilla-2':
     raise NotImplementedError("work in progress")
