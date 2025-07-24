@@ -339,7 +339,7 @@ while True:
                 log_dict["eta_hours"] = eta_seconds / 3600
             wandb.log(log_dict)
             
-        if True: #losses['val'] < best_val_loss or always_save_checkpoint:
+        if (iter_num % 5000 == 0 and iter_num < 105000) or iter_num % 25000 == 0: 
             best_val_loss = losses['val']
             if iter_num > 0:
                 checkpoint = {
